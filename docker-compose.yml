@@ -1,0 +1,28 @@
+services:
+  gateway:
+    build:
+      context: ./server
+    image: legacybrowse-gateway
+    container_name: legacybrowse
+    # Published on all interfaces so the iPad can reach it over the LAN.
+    ports:
+      - "8787:8787"
+    # Chromium spawns children that must be reaped, or zombies accumulate over
+    # a long-running session.
+    init: true
+    # Chromium is launched with --disable-dev-shm-usage, but headroom here
+    # still avoids renderer crashes on heavy pages.
+    shm_size: "512mb"
+    restart: unless-stopped
+    environment:
+      PORT: "8787"
+      # Only needed behind a reverse proxy or tunnel. Left unset, the gateway
+      # builds session URLs from the Host header the iPad actually used, which
+      # is what you want for plain LAN access.
+      # GATEWAY_PUBLIC_URL: "https://legacybrowse.example.com"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

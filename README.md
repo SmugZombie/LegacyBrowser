@@ -6,7 +6,27 @@ Hybrid browser for **iOS 9+ iPads**: local `WKWebView` on newer iOS, lite DOM sn
 themselves, so a request with no `preferredMode` resolves to the gateway's Chromium rather than to
 a guess. Pick Auto/Lite/Local explicitly to override.
 
-## Run the gateway
+## Run with Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
+Serves on port 8787 on every interface, so the iPad can reach it at
+`http://<your-lan-ip>:8787`. `restart: unless-stopped` means it comes back after a reboot, which is
+what you want if the iPad is a permanent fixture. Logs with `docker compose logs -f`, stop with
+`docker compose down`.
+
+Session URLs are built from the `Host` header the iPad actually used, so plain LAN access needs no
+configuration. Set `GATEWAY_PUBLIC_URL` (commented out in `docker-compose.yml`) only when running
+behind a reverse proxy or tunnel.
+
+> **Maintenance:** the base image ships browsers for one exact Playwright release, so
+> `PLAYWRIGHT_VERSION` in `server/Dockerfile` must match the `playwright` version in
+> `server/package-lock.json`. A mismatch fails at *runtime* with "Executable doesn't exist", not at
+> build time, so bump both together.
+
+## Run the gateway directly
 
 ```bash
 cd server
