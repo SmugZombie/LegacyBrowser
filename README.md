@@ -39,6 +39,12 @@ neither the iframe's own history nor a client-side trail can track navigation re
 1024×768; a floating `≡` button in the bottom-right brings them back. It sits bottom-right on purpose
 — top-right collides with the login/account controls most sites put there.
 
+The state persists in `localStorage` (`legacybrowse.chromeHidden`), so a session that ended full
+screen comes back full screen; tapping `≡` is a choice to show the nav bar and wins on the next
+launch. Two guards keep it from stranding you, since the status line is hidden in full screen:
+a saved full-screen state is only applied when there is a URL to resume into, and a failed resume
+reveals the chrome so the error is visible — without overwriting your preference.
+
 **Resuming where you left off.** The last visited URL and the selected mode are kept in
 `localStorage` (`legacybrowse.lastUrl`, `legacybrowse.lastMode`), the URL updated on every
 navigation the shell sees — including links followed inside the lite iframe. On the next launch the

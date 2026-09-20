@@ -110,6 +110,7 @@
     // quota both throw on access, so every call is guarded.
     var LAST_URL_KEY = "legacybrowse.lastUrl";
     var LAST_MODE_KEY = "legacybrowse.lastMode";
+    var CHROME_HIDDEN_KEY = "legacybrowse.chromeHidden";
 
     function rememberUrl(url) {
       if (!url) { return; }
@@ -242,8 +243,16 @@
         viewport: { width: 1024, height: 768 }
       }, function (code, data) {
         goButton.disabled = false;
-        if (!data) { showStatus("Gateway unreachable (" + code + ")"); return; }
-        if (code < 200 || code >= 300) { showStatus(data.error || ("Failed (" + code + ")")); return; }
+        if (!data) {
+          showStatus("Gateway unreachable (" + code + ")");
+          setChrome(true, false);
+          return;
+        }
+        if (code < 200 || code >= 300) {
+          showStatus(data.error || ("Failed (" + code + ")"));
+          setChrome(true, false);
+          return;
+        }
         session = data;
         urlInput.value = session.url;
         render();
@@ -277,9 +286,22 @@
     }
 
     // Hiding the chrome gives the page the whole 1024x768, which is most of
-    // the point on a screen this small.
-    function setChrome(visible) {
+    // the point on a screen this small. Pass persist=false for a temporary
+    // reveal that must not overwrite what the user chose.
+    function setChrome(visible, persist) {
       document.body.className = visible ? "" : "chrome-hidden";
+      if (persist === false) { return; }
+      try {
+        window.localStorage.setItem(CHROME_HIDDEN_KEY, visible ? "0" : "1");
+      } catch (err) {}
+    }
+
+    function recallChromeHidden() {
+      try {
+        return window.localStorage.getItem(CHROME_HIDDEN_KEY) === "1";
+      } catch (err) {
+        return false;
+      }
     }
 
     fullButton.onclick = function () { setChrome(false); };
@@ -328,6 +350,10 @@
     var lastUrl = recallUrl();
     if (lastUrl) {
       urlInput.value = lastUrl;
+      // Only honour a saved full-screen state when there is a page to fill it.
+      // Launching full screen with nothing loaded strands the user on a blank
+      // screen with no address bar. Do not re-persist; this is a restore.
+      if (recallChromeHidden()) { setChrome(false, false); }
       start();
     }
 
