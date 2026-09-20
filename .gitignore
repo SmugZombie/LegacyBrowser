@@ -1,0 +1,13 @@
+node_modules/
+server/node_modules/
+ios/build/
+ios/DerivedData/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+playwright-report/
+test-results/
+
+# iOS app is not part of this repo (arm64-only; see README)
+ios/
+*.log

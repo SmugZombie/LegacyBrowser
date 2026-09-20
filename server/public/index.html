@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LegacyBrowse Gateway</title>
+
+  <!-- Add to Home Screen. iOS 9 has no Web App Manifest (11.3) and no service
+       workers (11.3), so these Apple meta tags are what make it installable. -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="LegacyBrowse">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#1c2430">
+  <link rel="manifest" href="manifest.json">
+
+  <!-- 76 is the one the non-retina iPad mini 1 actually uses. -->
+  <link rel="apple-touch-icon" sizes="76x76" href="icons/icon-76.png">
+  <link rel="apple-touch-icon" sizes="120x120" href="icons/icon-120.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="icons/icon-152.png">
+  <link rel="apple-touch-icon" sizes="167x167" href="icons/icon-167.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png">
+  <link rel="icon" href="icons/icon-192.png">
+
+  <!-- iOS 9 only honours a startup image whose dimensions match exactly. -->
+  <link rel="apple-touch-startup-image"
+        media="(device-width: 768px) and (device-height: 1024px) and (-webkit-device-pixel-ratio: 1) and (orientation: portrait)"
+        href="icons/splash-768x1004.png">
+  <link rel="apple-touch-startup-image"
+        media="(device-width: 768px) and (device-height: 1024px) and (-webkit-device-pixel-ratio: 1) and (orientation: landscape)"
+        href="icons/splash-1024x748.png">
+  <style>
+    /* ES5 + Safari 9 only: no flex gap, no object-fit, no CSS vars. */
+    body { margin: 0; font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; background: #12161c; color: #e8edf4; -webkit-text-size-adjust: 100%; }
+    header { padding: 16px 20px; background: #1c2430; display: -webkit-flex; display: flex; -webkit-flex-wrap: wrap; flex-wrap: wrap; -webkit-align-items: center; align-items: center; }
+    input, select, button { font: inherit; border-radius: 8px; border: 0; padding: 8px 10px; margin: 0 8px 0 0; box-sizing: border-box; -webkit-appearance: none; appearance: none; }
+    input { -webkit-flex: 1; flex: 1; min-width: 220px; }
+    select { background: #2a3444; color: #e8edf4; }
+    button { background: #6ea8ff; color: #102033; font-weight: 700; cursor: pointer; margin-right: 0; }
+    button.secondary { background: #2a3444; color: #e8edf4; }
+    button[disabled] { opacity: 0.4; }
+    #status { padding: 8px 20px; color: #9fb0c7; min-height: 1.4em; }
+    /* max-width/max-height keeps aspect ratio without object-fit (Safari 10+). */
+    #frame { display: none; max-width: 100%; max-height: calc(100vh - 120px); margin: 0 auto; background: #0b0e13; }
+    /* Old iOS ignores height on iframes and expands them to content, so the
+       wrapper is what actually scrolls. */
+    #liteWrap { display: none; width: 100%; height: calc(100vh - 120px); overflow: auto; -webkit-overflow-scrolling: touch; background: #fff; }
+    #lite { display: block; width: 100%; height: 100%; border: 0; }
+
+    /* Full-screen reading mode. The restore button has to stay reachable, or
+       hiding the chrome would strand the user with no way back. */
+    #restore { display: none; position: fixed; bottom: 10px; right: 10px; z-index: 10;
+      background: rgba(28, 36, 48, 0.82); color: #e8edf4; padding: 7px 11px;
+      font-size: 17px; line-height: 1; margin: 0; }
+    body.chrome-hidden header, body.chrome-hidden #status { display: none; }
+    body.chrome-hidden #restore { display: block; }
+    body.chrome-hidden #frame { max-height: 100vh; }
+    body.chrome-hidden #liteWrap { height: 100vh; }
+
+    #awake { position: fixed; bottom: 0; left: 0; width: 1px; height: 1px;
+      opacity: 0.01; pointer-events: none; z-index: -1; }
+  </style>
+</head>
+<body>
+  <header>
+    <button id="back" type="button" class="secondary" disabled>‹</button>
+    <input id="url" type="url" autocapitalize="off" autocorrect="off" spellcheck="false" value="https://en.wikipedia.org/wiki/IPad">
+    <select id="mode">
+      <option value="auto">Auto</option>
+      <option value="lite">Lite</option>
+      <option value="cloud" selected>Cloud</option>
+      <option value="local">Local (client only)</option>
+    </select>
+    <button id="go" type="button">Go</button>
+    <button id="full" type="button" class="secondary" title="Hide controls">Full</button>
+  </header>
+  <div id="status">Idle.</div>
+  <img id="frame" alt="Cloud frame">
+  <div id="liteWrap"><iframe id="lite" title="Lite snapshot"></iframe></div>
+  <button id="restore" type="button" class="secondary" title="Show controls">≡</button>
+  <video id="awake" src="keepawake.mp4" muted loop playsinline webkit-playsinline preload="auto"></video>
+  <script>
+  (function () {
+    "use strict";
+
+    var statusEl = document.getElementById("status");
+    var frame = document.getElementById("frame");
+    var lite = document.getElementById("lite");
+    var liteWrap = document.getElementById("liteWrap");
+    var urlInput = document.getElementById("url");
+    var modeSelect = document.getElementById("mode");
+    var goButton = document.getElementById("go");
+    var backButton = document.getElementById("back");
+    var fullButton = document.getElementById("full");
+    var restoreButton = document.getElementById("restore");
+    var awakeVideo = document.getElementById("awake");
+    var wantAwake = false;
+
+    var session = null;
+    var frameTimer = null;
+    var pollToken = 0;
+
+    // iOS reports "CPU OS 9_3_5" / "iPhone OS 9_3_5"; desktop browsers match nothing.
+    var match = /(?:CPU|iPhone) OS (\d+)[_.]/.exec(navigator.userAgent);
+    var osMajor = match ? parseInt(match[1], 10) : 0;
+    // An A5 iPad chokes on a 120ms frame loop; give old hardware more room.
+    var frameIntervalMs = (osMajor > 0 && osMajor < 12) ? 400 : 150;
+
+    // Remembering where you were is optional: iOS private browsing and a full
+    // quota both throw on access, so every call is guarded.
+    var LAST_URL_KEY = "legacybrowse.lastUrl";
+    var LAST_MODE_KEY = "legacybrowse.lastMode";
+
+    function rememberUrl(url) {
+      if (!url) { return; }
+      try {
+        window.localStorage.setItem(LAST_URL_KEY, url);
+      } catch (err) {}
+    }
+
+    function recallUrl() {
+      try {
+        return window.localStorage.getItem(LAST_URL_KEY);
+      } catch (err) {
+        return null;
+      }
+    }
+
+    // The chosen mode, not the resolved one: "Auto" has to stay "Auto" next
+    // launch, or one use would silently pin it to whatever it happened to pick.
+    function rememberMode(mode) {
+      if (!mode) { return; }
+      try {
+        window.localStorage.setItem(LAST_MODE_KEY, mode);
+      } catch (err) {}
+    }
+
+    function recallMode() {
+      try {
+        return window.localStorage.getItem(LAST_MODE_KEY);
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function showStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function request(method, url, body, onDone) {
+      var xhr = new XMLHttpRequest();
+      xhr.open(method, url, true);
+      if (body) { xhr.setRequestHeader("Content-Type", "application/json"); }
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState !== 4) { return; }
+        var parsed = null;
+        try { parsed = JSON.parse(xhr.responseText); } catch (err) { parsed = null; }
+        onDone(xhr.status, parsed);
+      };
+      xhr.send(body ? JSON.stringify(body) : null);
+    }
+
+    function stopFrames() {
+      pollToken = pollToken + 1;
+      if (frameTimer) { clearTimeout(frameTimer); frameTimer = null; }
+      frame.onload = null;
+      frame.onerror = null;
+    }
+
+    // Request the next frame only once the previous one has painted, so a slow
+    // device never queues up requests it cannot keep up with.
+    function pumpFrames(token) {
+      if (token !== pollToken || !session) { return; }
+      frame.onload = function () {
+        if (token !== pollToken) { return; }
+        frameTimer = setTimeout(function () { pumpFrames(token); }, frameIntervalMs);
+      };
+      frame.onerror = function () {
+        // The gateway answers 503 until the first frame is ready.
+        if (token !== pollToken) { return; }
+        frameTimer = setTimeout(function () { pumpFrames(token); }, frameIntervalMs * 2);
+      };
+      frame.src = session.frameURL + "?t=" + (new Date()).getTime();
+    }
+
+    function syncBack() {
+      backButton.disabled = !session || session.mode !== "lite" || !session.canGoBack;
+    }
+
+    // Same URL for every page in a session, so bust the cache or the iframe
+    // will not reload.
+    function liteSrc() {
+      return session.liteURL + (session.liteURL.indexOf("?") === -1 ? "?" : "&") +
+        "t=" + (new Date()).getTime();
+    }
+
+    // Links are followed inside the iframe, which the shell cannot observe, so
+    // the gateway keeps the history. Re-read it once a page settles.
+    lite.onload = function () {
+      if (!session || session.mode !== "lite") { return; }
+      request("GET", "/v1/session/" + session.id, null, function (code, data) {
+        if (!data || code < 200 || code >= 300) { return; }
+        session = data;
+        urlInput.value = data.url;
+        rememberUrl(data.url);
+        showStatus("Lite \u00b7 " + data.url);
+        syncBack();
+      });
+    };
+
+    function render() {
+      syncBack();
+      rememberUrl(session.url);
+      if (session.mode === "cloud") {
+        liteWrap.style.display = "none";
+        lite.src = "about:blank";
+        frame.style.display = "block";
+        showStatus("Cloud Chromium · tap the image to tap the page");
+        pumpFrames(pollToken);
+      } else if (session.mode === "lite") {
+        frame.style.display = "none";
+        frame.removeAttribute("src");
+        liteWrap.style.display = "block";
+        lite.src = liteSrc();
+        showStatus("Lite · " + session.url);
+      } else {
+        frame.style.display = "none";
+        liteWrap.style.display = "none";
+        showStatus("Local mode — this browser renders the page itself.");
+      }
+    }
+
+    function start() {
+      stopFrames();
+      rememberMode(modeSelect.value);
+      goButton.disabled = true;
+      showStatus("Opening session…");
+      request("POST", "/v1/session", {
+        url: urlInput.value,
+        preferredMode: modeSelect.value,
+        osMajor: osMajor,
+        viewport: { width: 1024, height: 768 }
+      }, function (code, data) {
+        goButton.disabled = false;
+        if (!data) { showStatus("Gateway unreachable (" + code + ")"); return; }
+        if (code < 200 || code >= 300) { showStatus(data.error || ("Failed (" + code + ")")); return; }
+        session = data;
+        urlInput.value = session.url;
+        render();
+      });
+    }
+
+    // iOS 9 has no Wake Lock API (Safari 16.4+), so the only lever is keeping
+    // an inline video playing. It needs a real user gesture to start, hence the
+    // call from the Go handlers rather than on load.
+    function keepAwake() {
+      wantAwake = true;
+      if (navigator.wakeLock && navigator.wakeLock.request) {
+        try {
+          var lock = navigator.wakeLock.request("screen");
+          if (lock && lock["catch"]) { lock["catch"](function () {}); }
+        } catch (err) {}
+        return;
+      }
+      if (!awakeVideo) { return; }
+      try {
+        var playing = awakeVideo.play();
+        if (playing && playing["catch"]) { playing["catch"](function () {}); }
+      } catch (err) {}
+    }
+
+    if (awakeVideo) {
+      awakeVideo.onpause = function () {
+        if (!wantAwake) { return; }
+        try { awakeVideo.play(); } catch (err) {}
+      };
+    }
+
+    // Hiding the chrome gives the page the whole 1024x768, which is most of
+    // the point on a screen this small.
+    function setChrome(visible) {
+      document.body.className = visible ? "" : "chrome-hidden";
+    }
+
+    fullButton.onclick = function () { setChrome(false); };
+    restoreButton.onclick = function () { setChrome(true); };
+
+    goButton.onclick = function () { keepAwake(); start(); };
+
+    backButton.onclick = function () {
+      if (!session || !session.canGoBack) { return; }
+      backButton.disabled = true;
+      showStatus("Going back\u2026");
+      request("POST", session.backURL, {}, function (code, data) {
+        if (!data || code < 200 || code >= 300) {
+          showStatus((data && data.error) || ("Back failed (" + code + ")"));
+          syncBack();
+          return;
+        }
+        session = data;
+        render();
+      });
+    };
+
+    urlInput.onkeydown = function (e) {
+      var code = e.keyCode || e.which;
+      if (code === 13) {
+        if (e.preventDefault) { e.preventDefault(); }
+        urlInput.blur();
+        keepAwake();
+        start();
+      }
+    };
+
+    // Restore the mode first, so the auto-resume below opens in it.
+    var lastMode = recallMode();
+    if (lastMode) {
+      for (var i = 0; i < modeSelect.options.length; i++) {
+        if (modeSelect.options[i].value === lastMode) {
+          modeSelect.value = lastMode;
+          break;
+        }
+      }
+    }
+
+    // Pick up where the last session left off. start() needs no user gesture;
+    // keep-awake still waits for one, which is why it is not called here.
+    var lastUrl = recallUrl();
+    if (lastUrl) {
+      urlInput.value = lastUrl;
+      start();
+    }
+
+    frame.onclick = function (e) {
+      if (!session || session.mode !== "cloud") { return; }
+      var rect = frame.getBoundingClientRect();
+      var nx = (e.clientX - rect.left) / rect.width;
+      var ny = (e.clientY - rect.top) / rect.height;
+      request("POST", session.inputURL, { type: "tap", nx: nx, ny: ny }, function () {});
+    };
+  })();
+  </script>
+</body>
+</html>
