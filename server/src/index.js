@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { closeBrowser } from "./browser.js";
 import { proxyResource } from "./proxy.js";
 import {
+  IDLE_MS,
   backSession,
   changeMode,
   createSession,
@@ -159,7 +160,9 @@ app.get("/v1/proxy", (req, res) => {
   }
 });
 
-setInterval(sweepIdleSessions, 60 * 1000).unref();
+// Sweep at least as often as the idle window, so a short window set for
+// testing actually takes effect.
+setInterval(sweepIdleSessions, Math.max(2000, Math.min(60 * 1000, IDLE_MS))).unref();
 
 const server = app.listen(PORT, "0.0.0.0", () => {
   // eslint-disable-next-line no-console

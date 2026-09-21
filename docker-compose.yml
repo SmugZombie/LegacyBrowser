@@ -16,6 +16,9 @@ services:
     restart: unless-stopped
     environment:
       PORT: "8787"
+      # How long a session survives with no client contact. The page
+      # heartbeats every 60s, so this is three missed beats.
+      SESSION_IDLE_MS: "${SESSION_IDLE_MS:-300000}"
       # Only needed behind a reverse proxy or tunnel. Left unset, the gateway
       # builds session URLs from the Host header the iPad actually used, which
       # is what you want for plain LAN access.

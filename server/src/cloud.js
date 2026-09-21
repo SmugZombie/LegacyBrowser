@@ -8,7 +8,9 @@ export async function startScreencast(page, session) {
     try {
       session.frame = Buffer.from(event.data, "base64");
       session.frameSeq += 1;
-      session.updatedAt = Date.now();
+      // Deliberately does NOT touch session.updatedAt: the screencast runs
+      // whether or not anyone is fetching frames, so counting it as activity
+      // made abandoned cloud sessions immortal.
       await client.send("Page.screencastFrameAck", { sessionId: event.sessionId });
     } catch {
       // session may have closed mid-frame

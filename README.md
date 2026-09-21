@@ -102,6 +102,28 @@ Open `ios/LegacyBrowse.xcodeproj`, set your signing team, and run on a 64-bit de
 
 32-bit iPads (iPad 2/3/4, mini 1) need an old `armv7` toolchain and sideloading; they are not part of this tree.
 
+## Sessions and resources
+
+One Chromium **process** is shared by everything, but each session gets its own browser context and
+page (~95 MB, plus a renderer process). In cloud mode it also runs a CDP screencast that encodes
+frames continuously, whether or not anyone is fetching them.
+
+So sessions are the resource to control, and two things do it:
+
+- **One session per device.** The page keeps a `legacybrowse.clientId` in `localStorage` and sends it
+  with `POST /v1/session`. The gateway hands that client back its existing context — a refresh, or a
+  second tab on the same iPad, reuses the running browser and keeps its history. A different device
+  gets its own. If storage is blocked the id is regenerated per load and you get the old
+  session-per-load behaviour rather than a failure.
+- **Idle sessions are reaped.** The page heartbeats every 60s while open; `SESSION_IDLE_MS`
+  (default 300000) is how long a session survives without client contact. Lite mode issues no
+  requests at all once its snapshot is up, which is why the heartbeat exists — without it there is no
+  way to tell a page being read from an abandoned tab.
+
+> Screencast frames deliberately do **not** count as activity. They used to, which meant an abandoned
+> cloud session refreshed its own idle timer forever: the sweeper never fired, and the container sat
+> at ~110% CPU and 1.3 GB with nobody watching.
+
 ## API
 
 `POST /v1/session` `{ url, preferredMode, osMajor, skipLocal, viewport }`

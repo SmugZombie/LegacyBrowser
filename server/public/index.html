@@ -111,6 +111,7 @@
     var LAST_URL_KEY = "legacybrowse.lastUrl";
     var LAST_MODE_KEY = "legacybrowse.lastMode";
     var CHROME_HIDDEN_KEY = "legacybrowse.chromeHidden";
+    var CLIENT_ID_KEY = "legacybrowse.clientId";
 
     function rememberUrl(url) {
       if (!url) { return; }
@@ -143,6 +144,28 @@
         return null;
       }
     }
+
+    // A stable id per device, so the gateway can hand a refresh back its
+    // existing browser context instead of opening another one. If storage is
+    // blocked this is regenerated each load and every visit gets its own
+    // session, which is the old behaviour rather than a failure.
+    function deviceId() {
+      var id = null;
+      try {
+        id = window.localStorage.getItem(CLIENT_ID_KEY);
+      } catch (err) {
+        id = null;
+      }
+      if (!id) {
+        id = "c" + (new Date()).getTime() + "-" + Math.floor(Math.random() * 1000000000);
+        try {
+          window.localStorage.setItem(CLIENT_ID_KEY, id);
+        } catch (err) {}
+      }
+      return id;
+    }
+
+    var CLIENT_ID = deviceId();
 
     function showStatus(text) {
       statusEl.textContent = text;
@@ -238,6 +261,7 @@
       showStatus("Opening session…");
       request("POST", "/v1/session", {
         url: urlInput.value,
+        clientId: CLIENT_ID,
         preferredMode: modeSelect.value,
         osMajor: osMajor,
         viewport: { width: 1024, height: 768 }
@@ -356,6 +380,17 @@
       if (recallChromeHidden()) { setChrome(false, false); }
       start();
     }
+
+    // Lite mode issues no requests once the snapshot is up, so without this
+    // the gateway cannot distinguish a page being read from an abandoned tab.
+    // Stopping the beat is also what lets an abandoned session be reaped.
+    setInterval(function () {
+      if (!session) { return; }
+      request("GET", "/v1/session/" + session.id, null, function (code) {
+        // Swept while the device was asleep; quietly re-establish it.
+        if (code === 404) { start(); }
+      });
+    }, 60000);
 
     frame.onclick = function (e) {
       if (!session || session.mode !== "cloud") { return; }

@@ -5,7 +5,13 @@ import { snapshotLite } from "./lite.js";
 import { handleInput, startScreencast, stopScreencast } from "./cloud.js";
 
 const sessions = new Map();
-const IDLE_MS = 15 * 60 * 1000;
+// The client heartbeats every 60s while its page is open, so this is three
+// missed beats rather than a guess at how long someone might read.
+export const IDLE_MS = Number(process.env.SESSION_IDLE_MS) || 5 * 60 * 1000;
+
+// clientId -> session id. One session per device, so a refresh or a second
+// tab reuses the existing browser context instead of spawning another.
+const clientSessions = new Map();
 
 function publicOrigin(req, configured) {
   if (configured) return configured.replace(/\/$/, "");
@@ -40,6 +46,9 @@ export async function destroySession(id) {
   const session = sessions.get(id);
   if (!session) return;
   sessions.delete(id);
+  if (session.clientId && clientSessions.get(session.clientId) === id) {
+    clientSessions.delete(session.clientId);
+  }
   try {
     await stopScreencast(session);
   } catch {
@@ -124,6 +133,24 @@ export async function createSession(req, body, origin) {
     skipLocal: Boolean(body.skipLocal),
   });
 
+  // Reuse this device's existing session rather than opening a second context.
+  const clientId = typeof body.clientId === "string" ? body.clientId.slice(0, 64) : "";
+  if (clientId) {
+    const existing = sessions.get(clientSessions.get(clientId));
+    if (existing) {
+      existing.updatedAt = Date.now();
+      if (existing.mode !== mode) {
+        await changeMode(req, existing, mode, origin);
+      }
+      if (existing.url !== url) {
+        return navigateSession(req, existing, url, origin);
+      }
+      // Same device, same page: hand back what is already rendered, history
+      // and all. A refresh costs nothing.
+      return sessionPayload(req, existing, origin);
+    }
+  }
+
   const session = {
     id: randomUUID(),
     url,
@@ -136,8 +163,14 @@ export async function createSession(req, body, origin) {
     liteHtml: "",
     frame: null,
     trail: [],
+    clientId,
   };
   sessions.set(session.id, session);
+  if (clientId) {
+    const stale = clientSessions.get(clientId);
+    if (stale && stale !== session.id) destroySession(stale);
+    clientSessions.set(clientId, session.id);
+  }
 
   if (mode === "local") {
     pushTrail(session, session.url);
