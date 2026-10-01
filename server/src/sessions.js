@@ -34,12 +34,38 @@ function urlsFor(req, origin, session) {
     navigateURL: `${origin}${base}/navigate`,
     modeURL: `${origin}${base}/mode`,
     backURL: `${origin}${base}/back`,
+    restartURL: `${origin}${base}/restart`,
     canGoBack: (session.trail || []).length > 1,
   };
 }
 
 export function getSession(id) {
   return sessions.get(id);
+}
+
+// Resolves after the promise settles or the deadline passes, whichever comes
+// first. A wedged renderer can leave CDP calls and even context.close() hanging
+// forever, and teardown must not hang with them.
+function settleWithin(promise, ms) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).catch(() => {}),
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+async function closeBrowserContext(session) {
+  const { context } = session;
+  await settleWithin(stopScreencast(session), 2000);
+  // Detach first, so nothing from the old page writes into the session while
+  // (or after) it is being closed.
+  session.context = null;
+  session.page = null;
+  session.cdp = null;
+  session.frame = null;
+  await settleWithin(context?.close(), 5000);
 }
 
 export async function destroySession(id) {
@@ -49,16 +75,7 @@ export async function destroySession(id) {
   if (session.clientId && clientSessions.get(session.clientId) === id) {
     clientSessions.delete(session.clientId);
   }
-  try {
-    await stopScreencast(session);
-  } catch {
-    // ignore
-  }
-  try {
-    await session.context?.close();
-  } catch {
-    // ignore
-  }
+  await closeBrowserContext(session);
 }
 
 export function sessionPayload(req, session, origin) {
@@ -71,7 +88,7 @@ async function ensurePage(session) {
   session.context = context;
   session.page = page;
   page.on("framenavigated", (frame) => {
-    if (frame === page.mainFrame()) {
+    if (session.page === page && frame === page.mainFrame()) {
       session.url = page.url();
     }
   });
@@ -250,6 +267,24 @@ export async function changeMode(req, session, mode, origin) {
     await renderCloud(session);
   }
   // Changing how a page is rendered is not a navigation; history is untouched.
+  session.updatedAt = Date.now();
+  return sessionPayload(req, session, origin);
+}
+
+// For a page that has locked up: throw away the browser context and open the
+// same URL in a fresh one. The session id, mode, and history survive, so the
+// client carries on as if it had simply reloaded.
+export async function restartSession(req, session, origin) {
+  const trail = session.trail || [];
+  const url = /^https?:\/\//i.test(session.url || "") ? session.url : trail[trail.length - 1];
+  await closeBrowserContext(session);
+  session.liteHtml = "";
+  if (url) session.url = url;
+  if (session.mode === "lite") {
+    await renderLite(session, origin);
+  } else if (session.mode === "cloud") {
+    await renderCloud(session);
+  }
   session.updatedAt = Date.now();
   return sessionPayload(req, session, origin);
 }

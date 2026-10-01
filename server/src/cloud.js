@@ -5,6 +5,9 @@ export async function startScreencast(page, session) {
   session.frameSeq = 0;
 
   client.on("Page.screencastFrame", async (event) => {
+    // A restart swaps in a new CDP session; a late frame from the old one must
+    // not overwrite the fresh page.
+    if (session.cdp !== client) return;
     try {
       session.frame = Buffer.from(event.data, "base64");
       session.frameSeq += 1;

@@ -41,7 +41,10 @@
     button[disabled] { opacity: 0.4; }
     #status { padding: 8px 20px; color: #9fb0c7; min-height: 1.4em; }
     /* max-width/max-height keeps aspect ratio without object-fit (Safari 10+). */
-    #frame { display: none; max-width: 100%; max-height: calc(100vh - 120px); margin: 0 auto; background: #0b0e13; }
+    /* The callout suppression keeps iOS's own Save Image sheet from swallowing
+       the long-press that opens the session menu. */
+    #frame { display: none; max-width: 100%; max-height: calc(100vh - 120px); margin: 0 auto; background: #0b0e13;
+      -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
     /* Old iOS ignores height on iframes and expands them to content, so the
        wrapper is what actually scrolls. */
     #liteWrap { display: none; width: 100%; height: calc(100vh - 120px); overflow: auto; -webkit-overflow-scrolling: touch; background: #fff; }
@@ -56,6 +59,13 @@
     body.chrome-hidden #restore { display: block; }
     body.chrome-hidden #frame { max-height: 100vh; }
     body.chrome-hidden #liteWrap { height: 100vh; }
+
+    #menuShade { display: none; position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 20; }
+    #menu { position: absolute; width: 230px; background: #1c2430; border-radius: 10px; padding: 6px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
+    #menu button { display: block; width: 100%; margin: 0; text-align: left; background: transparent;
+      color: #e8edf4; font-weight: 400; padding: 11px 12px; }
+    #menu button.danger { color: #ff8a80; font-weight: 700; }
 
     #awake { position: fixed; bottom: 0; left: 0; width: 1px; height: 1px;
       opacity: 0.01; pointer-events: none; z-index: -1; }
@@ -77,6 +87,12 @@
   <div id="status">Idle.</div>
   <img id="frame" alt="Cloud frame">
   <div id="liteWrap"><iframe id="lite" title="Lite snapshot"></iframe></div>
+  <div id="menuShade">
+    <div id="menu">
+      <button id="restartSession" type="button" class="danger">Restart session</button>
+      <button id="closeMenu" type="button">Cancel</button>
+    </div>
+  </div>
   <button id="restore" type="button" class="secondary" title="Show controls">≡</button>
   <video id="awake" src="keepawake.mp4" muted loop playsinline webkit-playsinline preload="auto"></video>
   <script>
@@ -392,7 +408,97 @@
       });
     }, 60000);
 
+    // Long-press on the stream opens a menu with an escape hatch for a page
+    // that has locked up: the gateway discards the browser context and opens
+    // the same URL in a fresh one.
+    var menuShade = document.getElementById("menuShade");
+    var menu = document.getElementById("menu");
+    var restartButton = document.getElementById("restartSession");
+    var closeMenuButton = document.getElementById("closeMenu");
+    var LONG_PRESS_MS = 600;
+    var pressTimer = null;
+    var pressX = 0;
+    var pressY = 0;
+    var suppressClick = false;
+
+    function openMenu(x, y) {
+      if (!session || session.mode !== "cloud") { return; }
+      menuShade.style.display = "block";
+      var w = menu.offsetWidth;
+      var h = menu.offsetHeight;
+      menu.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + "px";
+      menu.style.top = Math.max(8, Math.min(y, window.innerHeight - h - 8)) + "px";
+    }
+
+    function closeMenu() {
+      menuShade.style.display = "none";
+    }
+
+    function cancelPress() {
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    }
+
+    frame.addEventListener("touchstart", function (e) {
+      if (e.touches.length !== 1) { cancelPress(); return; }
+      pressX = e.touches[0].clientX;
+      pressY = e.touches[0].clientY;
+      suppressClick = false;
+      cancelPress();
+      pressTimer = setTimeout(function () {
+        pressTimer = null;
+        suppressClick = true;
+        openMenu(pressX, pressY);
+      }, LONG_PRESS_MS);
+    }, false);
+
+    frame.addEventListener("touchmove", function (e) {
+      var t = e.touches[0];
+      if (t && Math.abs(t.clientX - pressX) + Math.abs(t.clientY - pressY) > 10) { cancelPress(); }
+    }, false);
+
+    frame.addEventListener("touchend", function (e) {
+      cancelPress();
+      // The finger lifting after the menu opened must not also tap the page.
+      if (suppressClick && e.preventDefault) { e.preventDefault(); }
+    }, false);
+
+    frame.addEventListener("touchcancel", cancelPress, false);
+
+    // Desktop right-click, for testing without a device.
+    frame.addEventListener("contextmenu", function (e) {
+      if (e.preventDefault) { e.preventDefault(); }
+      openMenu(e.clientX, e.clientY);
+    }, false);
+
+    menuShade.onclick = function (e) {
+      if (e.target === menuShade) { closeMenu(); }
+    };
+    closeMenuButton.onclick = closeMenu;
+
+    restartButton.onclick = function () {
+      closeMenu();
+      if (!session) { return; }
+      var restartURL = session.restartURL || ("/v1/session/" + session.id + "/restart");
+      stopFrames();
+      goButton.disabled = true;
+      showStatus("Restarting session\u2026");
+      request("POST", restartURL, {}, function (code, data) {
+        goButton.disabled = false;
+        // Already gone on the gateway: a plain start opens a fresh one.
+        if (code === 404) { start(); return; }
+        if (!data || code < 200 || code >= 300) {
+          showStatus((data && data.error) || ("Restart failed (" + code + ")"));
+          setChrome(true, false);
+          return;
+        }
+        session = data;
+        urlInput.value = session.url;
+        render();
+      });
+    };
+
     frame.onclick = function (e) {
+      if (suppressClick) { suppressClick = false; return; }
       if (!session || session.mode !== "cloud") { return; }
       var rect = frame.getBoundingClientRect();
       var nx = (e.clientX - rect.left) / rect.width;

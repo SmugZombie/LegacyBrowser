@@ -12,6 +12,7 @@ import {
   getSession,
   navigateSession,
   publicOrigin,
+  restartSession,
   sendInput,
   sessionPayload,
   sweepIdleSessions,
@@ -119,6 +120,16 @@ app.post("/v1/session/:id/back", async (req, res) => {
     res.json(await backSession(req, session, originOf(req)));
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message || "back failed" });
+  }
+});
+
+app.post("/v1/session/:id/restart", async (req, res) => {
+  const session = requireSession(req, res);
+  if (!session) return;
+  try {
+    res.json(await restartSession(req, session, originOf(req)));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message || "restart failed" });
   }
 });
 
